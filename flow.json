@@ -1,0 +1,829 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Brand Profiler Input",
+        "formDescription": "กรอก Website URL หรือ Facebook Page URL ของลูกค้าอย่างน้อย 1 ช่อง (ถ้ามี Website URL ระบบจะข้ามขั้นตอนดึงข้อมูลจาก Facebook แล้วไปสแครปเว็บไซต์ตรงๆ เลย เร็วกว่าและประหยัด Apify credit กว่า)",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Website URL"
+            },
+            {
+              "fieldLabel": "Facebook Page URL"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8a2da4d0-c9f3-4e86-a2e4-f1d9d1d0195f",
+      "name": "1. Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -4464,
+        128
+      ],
+      "webhookId": "d0ecc77b-b446-4156-8f30-9a07bfb22530"
+    },
+    {
+      "parameters": {
+        "jsCode": "// รับ output จาก Form Trigger — รองรับทั้ง 2 ช่อง (Website URL / Facebook Page URL) กรอกอย่างน้อย 1 ช่อง\n// normalize เป็น key คงที่ (website_url_direct, facebook_url) ให้ node ถัดไปอ้างอิงได้ชัวร์ไม่ว่า label จะเปลี่ยน\nconst raw = $input.first().json;\nconst facebookUrl = (raw['Facebook Page URL'] || raw.facebook_url || '').trim();\nconst websiteUrlDirect = (raw['Website URL'] || raw.website_url || '').trim();\n\nif (!facebookUrl && !websiteUrlDirect) {\n  throw new Error('ต้องกรอกอย่างน้อย 1 ช่อง: Website URL หรือ Facebook Page URL');\n}\n\nreturn [{ json: { facebook_url: facebookUrl, website_url_direct: websiteUrlDirect } }];"
+      },
+      "id": "1c7d2cb4-673c-4d7a-a07f-df1619248976",
+      "name": "1b. Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4240,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-has-facebook",
+              "leftValue": "={{ $json.facebook_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a41dfa9a-f397-4309-8633-43eb91317054",
+      "name": "2. IF Has Facebook URL",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -4016,
+        128
+      ],
+      "notes": "เช็คว่ามี Facebook Page URL ไหม ถ้ามีก็ไปสแครป Facebook ต่อ (ทาง 'Get Page') ถ้าไม่มีก็ข้ามไปทาง '3b. Skip Facebook' — ไม่ว่าทางไหนก็ตามจะไปรวมกับ Website URL ตรงๆ (ถ้ามี) อีกทีที่ node '3c. Resolve Brand Source' เพื่อดึงข้อมูลจากทั้ง 2 ทางพร้อมกันได้ถ้า user กรอกมาทั้งคู่"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ไม่มี Facebook Page URL — ข้ามการสแครป Facebook ทั้งหมด\n// ส่ง shape เปล่า (เหมือน '3. Extract Website URL') ต่อให้ node merge ('3c. Resolve Brand Source')\n// ไปประกอบกับ Website URL ตรงๆ (ถ้ามี) ต่อเอง\nreturn [{\n  json: {\n    websiteUrl: null,\n    fbSummary: '',\n    pageName: '',\n    followers: null,\n    facebookUrl: ''\n  }\n}];"
+      },
+      "id": "73b348ec-40f9-435c-aca3-8d46428b6274",
+      "name": "3b. Skip Facebook (No FB Data)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3696,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// รวมข้อมูลจาก 2 ทาง: Facebook page (pageName/fbSummary/followers) + Website URL ที่กรอกตรงๆ ใน form (ถ้ามี)\n// Priority: Website URL ที่กรอกตรงๆ ชนะ website ที่ไปขุดเจอจาก Facebook about text (เชื่อถือได้กว่าเพราะ user ยืนยันมาเอง)\n// แต่ pageName/fbSummary/followers จาก Facebook ยังใช้ต่อได้ตามปกติถ้ามี เพื่อให้ prompt ของ LLM ได้บริบทครบทั้ง 2 ทาง\nconst fbData = $input.first().json; // มาจาก '3. Extract Website URL' หรือ '3b. Skip Facebook (No FB Data)' — shape เดียวกัน\nconst directInput = $('1b. Normalize Input').first().json;\n\nconst websiteUrl = directInput.website_url_direct || fbData.websiteUrl || null;\n\nlet pageName = fbData.pageName || '';\nif (!pageName && websiteUrl) {\n  try {\n    pageName = new URL(websiteUrl).hostname.replace(/^www\\./, '');\n  } catch (e) {\n    pageName = websiteUrl;\n  }\n}\n\nreturn [{\n  json: {\n    websiteUrl,\n    fbSummary: fbData.fbSummary || '',\n    pageName,\n    followers: fbData.followers || null,\n    facebookUrl: fbData.facebookUrl || directInput.facebook_url || ''\n  }\n}];"
+      },
+      "id": "714ac54f-d0e2-4518-b267-d5536c143918",
+      "name": "3c. Resolve Brand Source",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3392,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorSource": "store",
+        "actorId": {
+          "__rl": true,
+          "value": "4Hv5RhChiaDk6iwad",
+          "mode": "list",
+          "cachedResultName": "Facebook Pages Scraper (apify/facebook-pages-scraper)",
+          "cachedResultUrl": "https://console.apify.com/actors/4Hv5RhChiaDk6iwad/input"
+        },
+        "customBody": "={\n  \"startUrls\": [{ \"url\": \"{{$json.facebook_url}}\" }],\n  \"resultsLimit\": 30\n}"
+      },
+      "id": "55bfe5a0-5c1b-4480-97a0-f63ee6b7c537",
+      "name": "Get Page",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        -3792,
+        240
+      ],
+      "credentials": {
+        "apifyApi": {
+          "id": "Tb20jhe0HIAmyyt2",
+          "name": "Mu account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ดึง website URL จาก Facebook page data (structured field ก่อน, fallback เป็น regex จาก about/intro text)\nconst items = $input.all();\nconst fbData = items[0].json[0] || items[0].json; // Apify sync-get-dataset-items คืนเป็น array\n\nlet websiteUrl = fbData.website || (fbData.intro && fbData.intro.website) || null;\n\nif (!websiteUrl) {\n  const aboutText = fbData.about || (fbData.intro ? JSON.stringify(fbData.intro) : '');\n  const urlMatch = aboutText.match(/https?:\\/\\/[^\\s\"]+/);\n  websiteUrl = urlMatch ? urlMatch[0] : null;\n}\n\nreturn [{\n  json: {\n    websiteUrl,\n    fbSummary: fbData.about || '',\n    pageName: fbData.pageName || fbData.title || '',\n    followers: fbData.followers || fbData.likes || null,\n    facebookUrl: fbData.pageUrl || fbData.url || ''\n  }\n}];"
+      },
+      "id": "19280520-b1bb-466e-8d39-8f1ac81c25b3",
+      "name": "3. Extract Website URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3600,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.websiteUrl }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ce5ba348-f813-4c98-b38c-ce32993d6832",
+      "name": "4. IF Has Website",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3200,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorSource": "store",
+        "actorId": {
+          "__rl": true,
+          "value": "3ox4R101TgZz67sLr",
+          "mode": "list"
+        },
+        "customBody": "={\n  \"query\": \"{{$json.websiteUrl}}\",\n  \"outputFormats\": [\"markdown\"],\n  \"scrapingTool\": \"browser-playwright\",\n  \"requestTimeoutSecs\": 45\n}"
+      },
+      "id": "29945604-2591-4956-bc22-98689c0cc04f",
+      "name": "5a. Run Actor - Scrape Website",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        -2992,
+        32
+      ],
+      "credentials": {
+        "apifyApi": {
+          "id": "Tb20jhe0HIAmyyt2",
+          "name": "Mu account"
+        }
+      },
+      "notes": "customBody ต้องเป็น JSON string ตาม pattern เดียวกับ node 'Get Page'"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { websiteContent: '(ไม่มีข้อมูลเว็บไซต์ - ใช้ข้อมูล Facebook อย่างเดียว)' } }];"
+      },
+      "id": "6a0e9131-285e-40e1-962c-4aad9f11b61d",
+      "name": "5b. No Website Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2992,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// รวม text จากหลายหน้าเว็บและตัดความยาว ป้องกัน token overflow\nconst items = $input.all();\nlet combined = '';\n\nfor (const item of items) {\n  const data = item.json;\n  if (Array.isArray(data)) {\n    for (const page of data) {\n      combined += (page.text || page.markdown || '') + '\\n\\n';\n    }\n  } else if (data.text || data.markdown) {\n    combined += (data.text || data.markdown) + '\\n\\n';\n  } else if (data.websiteContent) {\n    combined += data.websiteContent;\n  }\n}\n\n// จำกัดความยาว ~4000 words กันเกิน context/token limit\nconst words = combined.split(/\\s+/);\nconst truncated = words.slice(0, 4000).join(' ');\n\nreturn [{ json: { websiteContent: truncated } }];"
+      },
+      "id": "b6fd946d-ac8c-4018-99d1-1ca9c8c74ede",
+      "name": "6. Clean & Merge Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2752,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const websiteContent = $json.websiteContent;\nconst extractData = $('3c. Resolve Brand Source').first().json;\n\nconst systemPrompt = `คุณคือ Senior KOL Discovery Strategist ของ Influencer Marketing Agency ในประเทศไทย\n\nหน้าที่ของคุณคือวิเคราะห์แบรนด์เพื่อหา Creator ที่เหมาะสมสำหรับทำ Influencer Marketing บน TikTok\n\nข้อมูลที่ได้รับอาจมาจาก Website และ Facebook ของแบรนด์\n\nตอบเป็น JSON เท่านั้น\nห้ามมีข้อความอื่น\nห้ามมี markdown\nห้ามใช้ code fence\n\n==========================\nหลักการสำคัญ\n==========================\n\nOutput นี้จะถูกนำไปใช้ค้นหา Creator บน TikTok\n\nอย่าสรุปแบรนด์เหมือนรายงานการตลาด\n\nให้คิดในมุมของ Agency ที่กำลังหา KOL\n\nCreator ที่ดี คือ Creator ที่ทำคอนเทนต์เรื่องนั้นเป็นประจำ\nไม่ใช่ Influencer ที่รีวิวทุกอย่าง\n\n==========================\ncreator_search_keywords\n==========================\n\nใช้สำหรับค้นหา Creator\n\nต้องเป็น\n\n- อาชีพ\n- ความเชี่ยวชาญ\n- Hobby\n- Community\n- Lifestyle\n- Identity\n\nห้ามเป็น\n\n- slogan\n- benefit\n- คำโฆษณา\n- marketing phrase\n\nตัวอย่างที่ดี\n\nนักวิ่ง\n\nสายเวท\n\nหมอผิวหนัง\n\nเภสัชกร\n\nแม่ลูกอ่อน\n\nBeauty Creator\n\nSkincare Creator\n\nสายกาแฟ\n\nสายแต่งบ้าน\n\nนักปั่นจักรยาน\n\n==========================\nhashtag_keywords\n==========================\n\nเป็น hashtag ที่ Creator ใช้จริง\n\nไม่ใช่ slogan ของแบรนด์\n\n==========================\nsearch_queries\n==========================\n\nเป็นข้อความที่สามารถนำไปค้นหา Creator บน TikTok ได้ทันที\n\nเช่น\n\nหมอผิวหนัง รีวิวสกินแคร์\n\nเภสัชกร วิเคราะห์ส่วนผสม\n\nนักวิ่ง รีวิวรองเท้า\n\nสายเวท อาหารเสริม\n\nแม่ลูกอ่อน ของใช้เด็ก\n\nBeauty Creator\n\n==========================\ncreator_personas\n==========================\n\nระบุประเภท Creator ที่ควรจ้าง พร้อมเหตุผล\n\n==========================\nexpertise_topics\n==========================\n\nเป็นหัวข้อความรู้ที่ Creator พูดถึงเป็นประจำ\n\nเช่น\n\nRetinol\n\nNiacinamide\n\nVitamin C\n\nSkin Barrier\n\nรักษาสิว\n\nAnti-aging\n\n==========================\nภาษา\n==========================\n\nทุก field เป็นภาษาไทย\n\nยกเว้น\n\n- ชื่อแบรนด์\n- ชื่อสารสำคัญ\n- ชื่อเฉพาะ\n- คำเทคนิค เช่น Retinol, Niacinamide, Skin Barrier, Beauty Creator\n\n==========================\nJSON Schema\n==========================\n\n{\n  \"industry\": \"string\",\n  \"sub_niche\": \"string\",\n  \"brand_tone\": \"string\",\n\n  \"target_audience\": {\n    \"age_range\": \"string\",\n    \"gender_skew\": \"string\",\n    \"interests\": [\n      \"string\"\n    ]\n  },\n\n  \"price_positioning\": \"budget | mid-range | premium\",\n\n  \"creator_search_keywords\": [\n    \"string\"\n  ],\n\n  \"hashtag_keywords\": [\n    \"string\"\n  ],\n\n  \"search_queries\": [\n    \"string\"\n  ],\n\n  \"creator_personas\": [\n    {\n      \"name\": \"string\",\n      \"reason\": \"string\"\n    }\n  ],\n\n  \"expertise_topics\": [\n    \"string\"\n  ],\n\n  \"product_keywords\": [\n    \"string\"\n  ],\n\n  \"lifestyle_keywords\": [\n    \"string\"\n  ],\n\n  \"content_style_fit\": [\n    \"string\"\n  ]\n}`;\n\nconst userPrompt = `วิเคราะห์แบรนด์นี้เพื่อสร้างข้อมูลสำหรับค้นหา Creator บน TikTok\n\nชื่อแบรนด์:\n${extractData.pageName}\n\nFacebook About:\n${extractData.fbSummary}\n\nข้อมูลจากเว็บไซต์:\n${websiteContent}`;\n\nreturn [\n  {\n    json: {\n      systemPrompt,\n      userPrompt\n    }\n  }\n];"
+      },
+      "id": "0d86d27e-ef58-46ae-927a-480ba6e7fc35",
+      "name": "7. Build Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2560,
+        112
+      ],
+      "notes": "FIX: เพิ่ม comma หลัง content_style_fit ที่ขาดไปเดิม (ทำให้ JSON schema ตัวอย่างใน prompt ไม่ valid) และเพิ่มคำสั่งกำชับให้ keywords สั้น เพราะจะเอาไปทำ hashtag ต่อใน node 9"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{$json.userPrompt}}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "={{$json.systemPrompt}}"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -2368,
+        112
+      ],
+      "id": "a69f8118-8a8f-485c-82f0-15b5cbf5a463",
+      "name": "Basic LLM Chain",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -2368,
+        336
+      ],
+      "id": "c7905ef0-1a15-4958-af18-1585a19bc9da",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "UPiOZAS1Nor317Bn",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse ผลลัพธ์จาก Basic LLM Chain (chainLlm)\n\nconst input = $input.first().json;\n\nlet raw =\n  input.text ||\n  input.output ||\n  input.response ||\n  (input.candidates &&\n    input.candidates[0] &&\n    input.candidates[0].content.parts[0].text) ||\n  '';\n\nlet profile;\n\ntry {\n  profile = JSON.parse(raw);\n} catch (e) {\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  profile = JSON.parse(cleaned);\n}\n\nconst extractNode = $('3c. Resolve Brand Source').first().json;\n\nreturn [{\n  json: {\n    facebook_url: extractNode.facebookUrl,\n    website_url: extractNode.websiteUrl,\n    page_name: extractNode.pageName,\n\n    industry: profile.industry || null,\n    sub_niche: profile.sub_niche || null,\n    brand_tone: profile.brand_tone || null,\n\n    target_age_range: profile.target_audience?.age_range || null,\n    target_gender_skew: profile.target_audience?.gender_skew || null,\n    target_interests: profile.target_audience?.interests || [],\n\n    price_positioning: profile.price_positioning || null,\n\n    // ===== NEW FIELDS =====\n    creator_search_keywords: profile.creator_search_keywords || [],\n    hashtag_keywords: profile.hashtag_keywords || [],\n    search_queries: profile.search_queries || [],\n    creator_personas: profile.creator_personas || [],\n    expertise_topics: profile.expertise_topics || [],\n\n    // ===== EXISTING FIELDS =====\n    product_keywords: profile.product_keywords || [],\n    lifestyle_keywords: profile.lifestyle_keywords || [],\n    content_style_fit: profile.content_style_fit || [],\n\n    // Backward compatibility\n    keywords: profile.keywords || [],\n\n    raw_profile: profile\n  }\n}];"
+      },
+      "id": "1aa24ec7-29fd-4996-8e40-9ed5fed504c0",
+      "name": "8. Parse Brand Profile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2032,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// สร้าง Search Terms สำหรับ TikTok Discovery\n// รวม hashtag_keywords + creator_search_keywords\n// ลบค่าซ้ำ และจำกัดจำนวนเพื่อประหยัด Apify Credit\n\nconst MAX_SEARCH_TERMS = 8;\n\nconst brand = $input.first().json;\n\n// ลบ # ถ้ามี และจัดรูปแบบข้อความ\nconst normalize = (text) =>\n  (text || \"\")\n    .replace(/^#/, \"\")\n    .replace(/[()]/g, \"\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n\n// รวม keyword จากหลายแหล่ง\nconst candidates = [\n  ...(brand.hashtag_keywords || []),\n  ...(brand.creator_search_keywords || [])\n]\n  .map(normalize)\n  .filter(Boolean);\n\n// ลบค่าซ้ำ\nconst uniqueTerms = [...new Set(candidates)].slice(0, MAX_SEARCH_TERMS);\n\nif (uniqueTerms.length === 0) {\n  throw new Error(\"ไม่พบ Search Keywords จาก Brand Profile\");\n}\n\n// ส่งออกทีละคำ\nreturn uniqueTerms.map(term => ({\n  json: {\n    search_term: term,\n    brand_page_name: brand.page_name || \"\",\n    source: (brand.hashtag_keywords || []).includes(term)\n      ? \"hashtag\"\n      : \"creator_keyword\"\n  }\n}));"
+      },
+      "id": "a2c2611d-a68c-487d-ae66-d7c12372312b",
+      "name": "9. Build Hashtag List From Brand",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1808,
+        112
+      ],
+      "notes": "ถ้า hashtag ที่ auto-generate จาก keywords ให้ผลลัพธ์น้อยเกินไปตอนรันจริง (เพราะ keyword บางคำไม่มีคนใช้เป็น hashtag บน TikTok จริง) ให้ต่อ Set node ก่อนหน้านี้เพื่อ manual override/เพิ่ม hashtag ที่รู้ว่าคนใช้เยอะเข้าไปเสริมได้"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "a428b90f-db84-4069-b410-1e72b4234c32",
+      "name": "10. Loop Hashtags (1 at a time)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -1584,
+        112
+      ],
+      "notes": "batchSize=1 กัน rate limit — CHECK IN N8N UI: ลำดับ output 'done'/'loop' ต่างกันตามเวอร์ชัน n8n เปิด canvas เช็คก่อนต่อสาย"
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorSource": "store",
+        "actorId": {
+          "__rl": true,
+          "value": "GdWCkxBtKWOsKjdch",
+          "mode": "list",
+          "cachedResultName": "TikTok Scraper (clockworks/tiktok-scraper)",
+          "cachedResultUrl": "https://console.apify.com/actors/GdWCkxBtKWOsKjdch/input"
+        },
+        "customBody": "={\n  \"hashtags\": [\"{{$json.search_term}}\"],\n  \"resultsPerPage\": 8,\n  \"shouldDownloadVideos\": false,\n  \"shouldDownloadCovers\": false,\n  \"shouldDownloadSubtitles\": false,\n  \"shouldDownloadSlideshowImages\": false\n}"
+      },
+      "id": "2a4528a7-ce7e-4aa0-8a6c-b68dc173d20e",
+      "name": "11a. Scrape Hashtag",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        256
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "apifyApi": {
+          "id": "Tb20jhe0HIAmyyt2",
+          "name": "Mu account"
+        }
+      },
+      "notes": "ต้องเลือก actor จริงจาก list ใน n8n UI อีกที (ค้นหา 'TikTok Scraper' จาก clockworks) — actorId ตรงนี้เป็น placeholder\nretryOnFail กันกรณี connection timeout เหมือนที่เจอใน node 14a"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ดึง username ของเจ้าของวิดีโอจากผลลัพธ์ hashtag scraper แล้วเก็บสะสมแบบ dedupe ใน workflow static data\nconst items = $input.all();\nlet videos = [];\n\nfor (const item of items) {\n  const data = item.json;\n  if (Array.isArray(data)) {\n    videos = videos.concat(data);\n  } else if (data.items) {\n    videos = videos.concat(data.items);\n  } else {\n    videos.push(data);\n  }\n}\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.usernames) staticData.usernames = [];\n\nfor (const v of videos) {\n  const username = (v.authorMeta && v.authorMeta.name) || v.authorName || v.author || null;\n  if (username && !staticData.usernames.includes(username)) {\n    staticData.usernames.push(username);\n  }\n}\n\nreturn [{ json: { hashtag: $('10. Loop Hashtags (1 at a time)').first().json.hashtag, accumulatedCount: staticData.usernames.length } }];"
+      },
+      "id": "c52769e8-7efd-41a5-8afa-584597e416be",
+      "name": "11b. Extract & Dedupe Usernames",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 8
+      },
+      "id": "ceb44508-aa26-4551-b07e-01fa5f38ab08",
+      "name": "11c. Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -752,
+        256
+      ],
+      "webhookId": "ef5c9391-ba8e-49eb-979a-ea3fdf563f22",
+      "notes": "หน่วง 8 วิ ก่อนไป hashtag ถัดไป กัน Apify/TikTok บล็อกจาก concurrent request ถี่เกิน"
+    },
+    {
+      "parameters": {
+        "jsCode": "// อ่านรายชื่อ username ที่สะสมไว้ทั้งหมดจาก static data แล้วแปลงเป็น item แยกสำหรับ stage ถัดไป\n// จำกัดจำนวนไว้ต่ำเพราะ credit Apify เหลือน้อย — node 14a (profile scraper) เป็นส่วนที่กิน\n// compute unit เยอะสุดในทั้ง flow ยิ่งจำนวนคนเยอะยิ่งกินเครดิตเยอะตามสัดส่วน\n// 10-15 คนก็เพียงพอสำหรับ prototype/demo แล้ว ไม่จำเป็นต้องมี KOL ครบทุกคนที่ discover เจอ\nconst TEST_LIMIT = 12; // <-- ปรับขึ้นได้ถ้าเช็ค Apify console แล้วเหลือ credit พอ\n\nconst staticData = $getWorkflowStaticData('global');\nlet usernames = staticData.usernames || [];\n\nif (TEST_LIMIT) {\n  usernames = usernames.slice(0, TEST_LIMIT);\n}\n\nreturn usernames.map(u => ({ json: { username: u } }));"
+      },
+      "id": "a4b3d9cf-8908-4435-a057-abcfe48506bb",
+      "name": "12. Finalize Username List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "da7bed7f-f8d0-4626-bb30-83cd57c4d391",
+      "name": "13. Loop Usernames (1 at a time)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -992,
+        -64
+      ],
+      "notes": "เช่นเดียวกับ node 10 — เช็ค output 'done'/'loop' ใน n8n UI ก่อนต่อสายเช่นกัน"
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorSource": "store",
+        "actorId": {
+          "__rl": true,
+          "value": "0FXVyOXXEmdGcV88a",
+          "mode": "list",
+          "cachedResultName": "TikTok Profile Scraper (clockworks/tiktok-profile-scraper)",
+          "cachedResultUrl": "https://console.apify.com/actors/0FXVyOXXEmdGcV88a/input"
+        },
+        "customBody": "={\n  \"profiles\": [\"{{$json.username}}\"],\n  \"resultsPerPage\": 6,\n  \"shouldDownloadVideos\": false,\n  \"shouldDownloadCovers\": false\n}"
+      },
+      "id": "e764fe2e-1ac6-4f57-950d-5e96d0b3ad46",
+      "name": "14a. Scrape TikTok Profile",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        -704,
+        16
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "apifyApi": {
+          "id": "Tb20jhe0HIAmyyt2",
+          "name": "Mu account"
+        }
+      },
+      "notes": "ลด resultsPerPage จาก 10 เหลือ 6 วิดีโอ/คน เพื่อลดเวลาที่ actor ใช้รัน กัน connection timeout จาก n8n เรียก Apify แบบ sync\nเพิ่ม retryOnFail: ถ้า timeout จะลองใหม่อัตโนมัติ 3 ครั้ง ห่างกัน 5 วิ"
+    },
+    {
+      "parameters": {
+        "jsCode": "// คำนวณ engagement rate เฉลี่ยจาก 10 วิดีโอล่าสุด แล้วเก็บ record ของ KOL คนนี้ลง static data\nconst items = $input.all();\nlet videos = [];\nlet profileMeta = null;\n\nfor (const item of items) {\n  const data = item.json;\n  if (Array.isArray(data)) {\n    videos = videos.concat(data);\n  } else {\n    videos.push(data);\n  }\n}\n\nif (videos.length > 0 && videos[0].authorMeta) {\n  profileMeta = videos[0].authorMeta;\n}\n\nlet totalViews = 0, totalLikes = 0, totalComments = 0, totalShares = 0;\nconst hashtagCount = {};\n\nfor (const v of videos) {\n  totalViews += v.playCount || 0;\n  totalLikes += v.diggCount || 0;\n  totalComments += v.commentCount || 0;\n  totalShares += v.shareCount || 0;\n  const tags = v.hashtags || [];\n  for (const h of tags) {\n    const name = h.name || h;\n    hashtagCount[name] = (hashtagCount[name] || 0) + 1;\n  }\n}\n\nconst videoCount = videos.length || 1;\nconst avgViews = totalViews / videoCount;\nconst avgLikes = totalLikes / videoCount;\nconst avgComments = totalComments / videoCount;\nconst engagementRate = avgViews > 0 ? (avgLikes + avgComments) / avgViews : null;\n\nconst topHashtags = Object.entries(hashtagCount)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 8)\n  .map(([name]) => name);\n\nconst recentCaptions = videos.slice(0, 10).map(v => v.text || '').filter(Boolean);\n\nconst username = $('13. Loop Usernames (1 at a time)').first().json.username;\n\nconst record = {\n  username,\n  display_name: profileMeta ? profileMeta.nickName : null,\n  bio: profileMeta ? profileMeta.signature : null,\n  follower_count: profileMeta ? profileMeta.fans : null,\n  following_count: profileMeta ? profileMeta.following : null,\n  avg_views_last_10: Math.round(avgViews),\n  avg_likes_last_10: Math.round(avgLikes),\n  avg_comments_last_10: Math.round(avgComments),\n  engagement_rate: engagementRate,\n  top_hashtags_used: topHashtags,\n  recent_video_captions: recentCaptions,\n  profile_url: `https://www.tiktok.com/@${username}`,\n  niche_tag: null\n};\n\n// ---------- ตรวจจับ owned-brand account (ตรรกะพอร์ตมาจาก matching_engine.py v4 is_likely_own_brand_account()) ----------\n// สัญญาณหลัก: username ไปปรากฏซ้ำเป็นส่วนหนึ่งของ hashtag ที่ตัวเองใช้บ่อย (top_hashtags_used)\n// ซึ่งเป็น pattern ทั่วไปของบัญชีแบรนด์ที่ใช้ branded-hashtag ของตัวเองซ้ำๆ ต่างจาก KOL อิสระที่รีวิวหลายแบรนด์สลับกันไป\n// - ถ้ามีสัญญาณเสริมจาก bio (\"บริษัท\", \"sales@\") หรือ username ลงท้าย \"official\" ด้วย -> มั่นใจพอตัดออกอัตโนมัติ (_exclude_own_brand)\n// - ถ้ามีแค่ username↔hashtag ตรงกันอย่างเดียว ไม่มั่นใจพอจะคัดออกเอง -> แค่ flag (possible_own_brand_account) ให้ตรวจสอบ ไม่ตัดออก\nconst OWN_BRAND_MIN_STEM_LENGTH = 4; // กันคำสั้นเกินไปที่จะ false positive ง่าย\nconst OWN_BRAND_BIO_SIGNALS = ['บริษัท', 'sales@'];\n\nfunction extractUsernameStem(u) {\n  if (!u) return '';\n  const stem = u.split(/[.\\d_]/)[0];\n  return (stem || '').toLowerCase();\n}\n\nfunction isLikelyOwnBrandAccount(rec) {\n  const stem = extractUsernameStem(rec.username);\n  if (stem.length < OWN_BRAND_MIN_STEM_LENGTH) {\n    return { shouldExclude: false, shouldFlag: false, matchedHashtag: '' };\n  }\n  const usernameLower = (rec.username || '').toLowerCase();\n  const bioLower = (rec.bio || '').toLowerCase();\n  const hashtags = rec.top_hashtags_used || [];\n\n  let matchedHashtag = '';\n  for (const tag of hashtags) {\n    if ((tag || '').toLowerCase().includes(stem)) {\n      matchedHashtag = tag;\n      break;\n    }\n  }\n  if (!matchedHashtag) {\n    return { shouldExclude: false, shouldFlag: false, matchedHashtag: '' };\n  }\n\n  const hasBioSignal = usernameLower.includes('official') ||\n    OWN_BRAND_BIO_SIGNALS.some(signal => bioLower.includes(signal));\n\n  if (hasBioSignal) {\n    return { shouldExclude: true, shouldFlag: false, matchedHashtag };\n  }\n  return { shouldExclude: false, shouldFlag: true, matchedHashtag };\n}\n\nconst ownBrandCheck = isLikelyOwnBrandAccount(record);\nrecord.possible_own_brand_account = ownBrandCheck.shouldFlag;\nrecord._exclude_own_brand = ownBrandCheck.shouldExclude;\nrecord._matched_own_brand_hashtag = ownBrandCheck.matchedHashtag;\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.kolDataset) staticData.kolDataset = [];\nstaticData.kolDataset.push(record);\n\nreturn [{ json: { username, accumulatedCount: staticData.kolDataset.length } }];"
+      },
+      "id": "9ec733dd-41fe-40a8-99bd-4ae9aa32d4f9",
+      "name": "14b. Compute Engagement & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 8
+      },
+      "id": "08029888-52e2-445f-bb75-f64c3f5d3118",
+      "name": "14c. Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -256,
+        16
+      ],
+      "webhookId": "153de1d7-0241-4258-a19d-0c236d5217d8"
+    },
+    {
+      "parameters": {
+        "jsCode": "// รวบรวม KOL dataset ทั้งหมดที่สะสมไว้เป็น output สุดท้าย — schema นี้ตรงกับที่ matching_engine.py ใช้ตรงๆ\n// niche_tag ยังเป็น null อยู่ — ถ้าต้องการ auto-classify ต่อ LLM node แยกได้ทีหลัง\nconst staticData = $getWorkflowStaticData('global');\nconst dataset = staticData.kolDataset || [];\n\nreturn dataset.map(record => ({ json: record }));"
+      },
+      "id": "552623f0-28d7-4f7b-86c3-7a6ed4963dc6",
+      "name": "15. Compile Final KOL Dataset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {
+          "fileName": "kol_dataset.json"
+        }
+      },
+      "id": "e8329bdc-45f2-459e-b8a1-bb61e47a9445",
+      "name": "16. Convert to JSON File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        -528,
+        -128
+      ],
+      "notes": "รวม item ทั้งหมด (KOL แต่ละคน) เป็นไฟล์ JSON เดียว array เดียว ตรง schema เดียวกับ kol_dataset.json ที่ matching_engine.py ใช้"
+    }
+  ],
+  "connections": {
+    "1. Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "1b. Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1b. Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "2. IF Has Facebook URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. IF Has Facebook URL": {
+      "main": [
+        [
+          {
+            "node": "Get Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "3b. Skip Facebook (No FB Data)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3b. Skip Facebook (No FB Data)": {
+      "main": [
+        [
+          {
+            "node": "3c. Resolve Brand Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3c. Resolve Brand Source": {
+      "main": [
+        [
+          {
+            "node": "4. IF Has Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Page": {
+      "main": [
+        [
+          {
+            "node": "3. Extract Website URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Extract Website URL": {
+      "main": [
+        [
+          {
+            "node": "3c. Resolve Brand Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. IF Has Website": {
+      "main": [
+        [
+          {
+            "node": "5a. Run Actor - Scrape Website",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "5b. No Website Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5a. Run Actor - Scrape Website": {
+      "main": [
+        [
+          {
+            "node": "6. Clean & Merge Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5b. No Website Fallback": {
+      "main": [
+        [
+          {
+            "node": "6. Clean & Merge Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Clean & Merge Text": {
+      "main": [
+        [
+          {
+            "node": "7. Build Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Build Prompts": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "8. Parse Brand Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Parse Brand Profile": {
+      "main": [
+        [
+          {
+            "node": "9. Build Hashtag List From Brand",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Build Hashtag List From Brand": {
+      "main": [
+        [
+          {
+            "node": "10. Loop Hashtags (1 at a time)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Loop Hashtags (1 at a time)": {
+      "main": [
+        [
+          {
+            "node": "12. Finalize Username List",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11a. Scrape Hashtag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11a. Scrape Hashtag": {
+      "main": [
+        [
+          {
+            "node": "11b. Extract & Dedupe Usernames",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11b. Extract & Dedupe Usernames": {
+      "main": [
+        [
+          {
+            "node": "11c. Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11c. Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "10. Loop Hashtags (1 at a time)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Finalize Username List": {
+      "main": [
+        [
+          {
+            "node": "13. Loop Usernames (1 at a time)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13. Loop Usernames (1 at a time)": {
+      "main": [
+        [
+          {
+            "node": "15. Compile Final KOL Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "14a. Scrape TikTok Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14a. Scrape TikTok Profile": {
+      "main": [
+        [
+          {
+            "node": "14b. Compute Engagement & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14b. Compute Engagement & Normalize": {
+      "main": [
+        [
+          {
+            "node": "14c. Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14c. Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "13. Loop Usernames (1 at a time)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15. Compile Final KOL Dataset": {
+      "main": [
+        [
+          {
+            "node": "16. Convert to JSON File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16. Convert to JSON File": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "04e7475c734d0b883d9e9310f41c070a42272c5d9f7538581efd708f6641f01a"
+  }
+}
