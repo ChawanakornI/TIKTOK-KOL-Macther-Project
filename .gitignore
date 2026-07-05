@@ -1,0 +1,29 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+*.env
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime output
+ranked_kols.json
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
